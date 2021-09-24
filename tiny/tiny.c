@@ -18,6 +18,7 @@ void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longms
 
 /* MAXLINE, MAXBUF == 8192 */
 
+/* 인자 개수 argc 인자 값들 */
 int main(int argc, char **argv)
 {
   int listenfd, connfd;
@@ -35,7 +36,7 @@ int main(int argc, char **argv)
   /* Open_listenfd 함수를 호출해서 듣기 소켓을 오픈한다. */
   listenfd = Open_listenfd(argv[1]);
 
-  /* 전형적인 무한 서버 루프를 실행*/
+  /* 전형적인 무한 서버 루프를 실행 */
   while (1)
   {
     clientlen = sizeof(clientaddr);
@@ -117,11 +118,18 @@ void doit(int fd)
   }
 }
 
+/* 명백한 오류에 대해서 클라이언트에게 보고하는 함수. 
+ * HTTP응답을 응답 라인에 적절한 상태 코드와 상태 메시지와 함께 클라이언트에게 보낸다.
+ * 
+ */
 void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longmsg)
 {
   char buf[MAXLINE], body[MAXBUF];
 
   /* BUILD the HTTP response body */
+  /* 브라우저 사용자에게 에러를 설명하는 응답 본체에 HTML파일도 함께 보낸다 */
+  /* HTML 응답은 본체에서 컨텐츠의 크기와 타입을 나타내야하기에, HTMl 컨텐츠를 한 개의 스트링으로 만든다. */
+  /* 이는 sprintf를 통해 body는 인자에 스택되어 하나의 긴 스트리잉 저장된다. */
   sprintf(body, "<html><title>Tiny Error</title>");
   sprintf(body, "%s<body bgcolor="
                 "ffffff"
@@ -150,6 +158,9 @@ void read_requesthdrs(rio_t *rp)
   char buf[MAXLINE];
 
   Rio_readlineb(rp, buf, MAXLINE);
+  printf("/*---------- reqeust hdrs 1 here! ----------*/\n");
+  /* strcmp 두 문자열을 비교하는 함수 */
+  /* 헤더의 마지막 줄은 비어있기에 \r\n   */
   while (strcmp(buf, "\r\n"))
   {
     Rio_readlineb(rp, buf, MAXLINE);
@@ -162,6 +173,7 @@ int parse_uri(char *uri, char *filename, char *cgiargs)
 {
   char *ptr;
 
+  /* strstr */
   if (!strstr(uri, "cgi-bin")) /* Static content */
   {
     strcpy(cgiargs, "");
@@ -179,12 +191,15 @@ int parse_uri(char *uri, char *filename, char *cgiargs)
     if (ptr)
     {
       strcpy(cgiargs, ptr + 1);
+      /* ptr 초기화 */
       *ptr = '\0';
     }
     else
       strcpy(cgiargs, "");
+
     strcpy(filename, ".");
     strcat(filename, uri);
+
     return 0;
   }
 }
@@ -192,7 +207,7 @@ int parse_uri(char *uri, char *filename, char *cgiargs)
 void serve_static(int fd, char *filename, int filesize)
 {
   int srcfd;
-  char *srcp, filetype[MAXLINE], buf[MAXBUF];
+  char *srcp, filetype[MAXLINE], buf[MAXBUF], *fbuf;
 
   /* Send response headers to client */
   get_filetype(filename, filetype);
@@ -201,20 +216,32 @@ void serve_static(int fd, char *filename, int filesize)
   sprintf(buf, "%sConnection: close\r\n", buf);
   sprintf(buf, "%sContent-length: %d\r\n", buf, filesize);
   sprintf(buf, "%sContent-type: %s\r\n\r\n", buf, filetype);
+
+  /* writen = client 쪽에 */
   Rio_writen(fd, buf, strlen(buf));
+
+  /* 서버 쪽에 출력 */
   printf("Response headers:\n");
   printf("%s", buf);
 
   /* Send response body to client */
   srcfd = Open(filename, O_RDONLY, 0);
-  srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);
+  // srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);
+  // Close(srcfd);
+  // Rio_writen(fd, srcp, filesize);
+  // Munmap(srcp, filesize);
+
+  /* 숙제문제 11.9 */
+  fbuf = malloc(filesize);
+  Rio_readn(srcfd, fbuf, filesize);
   Close(srcfd);
-  Rio_writen(fd, srcp, filesize);
-  Munmap(srcp, filesize);
+  Rio_writen(fd, fbuf, filesize);
+  free(fbuf);
 }
 
 /*
  * get_filetype - Derive file type from filename
+ * strstr 두번쨰 인자가 첫번째 인자에 들어있는지 확인
  */
 void get_filetype(char *filename, char *filetype)
 {
@@ -227,8 +254,8 @@ void get_filetype(char *filename, char *filetype)
   else if (strstr(filename, ".jpg"))
     strcpy(filetype, "image/jpeg");
   /* 11.7 숙제 문제 - Tiny 가 MPG  비디오 파일을 처리하도록 하기.  */
-  else if (strstr(filename, ".mpg"))
-    strcpy(filetype, "video/mpeg");
+  else if (strstr(filename, ".mp4"))
+    strcpy(filetype, "video/mp4");
   else
     strcpy(filetype, "text/plain");
 }
@@ -243,12 +270,12 @@ void serve_dynamic(int fd, char *filename, char *cgiargs)
   sprintf(buf, "Server: Tiny Web Server\r\n");
   Rio_writen(fd, buf, strlen(buf));
 
-  if (Fork() == 0) /* Child */
+  if (Fork() == 0) /* Child process 생성 - 부모 프로세스(지금) 을 복사한*/
   {
     /* Real server would set all CGI vars here */
-    setenv("QUERY_STRING", cgiargs, 1);
-    Dup2(fd, STDOUT_FILENO);              /* Redirect stdout to client */
+    setenv("QUERY_STRING", cgiargs, 1);   // 환경변수 설정
+    Dup2(fd, STDOUT_FILENO);              /* Redirect stdout to client, 자식 프로세스의 표준 출력을 연결 파일 식별자로 재지정 */
     Execve(filename, emptylist, environ); /* Run CGI program */
   }
-  Wait(NULL); /* Parent waits for and reaps child */
+  Wait(NULL); /* Parent waits for and reaps child 부모 프로세스가 자식 프로세스가 종료될떄까지 대기하는 함수*/
 }
